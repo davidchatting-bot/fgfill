@@ -8,7 +8,7 @@ input photo, and for each input video `original/` and `filled/` directories, eac
 The MediaPipe `selfie_segmenter` / `selfie_segmenter_landscape` TFLite models (in `models/`,
 re-downloaded to `~/.cache/fgfill` if missing) run through OpenCV's TFLite loader, so the
 full `mediapipe` package isn't needed. `ffmpeg`/`ffprobe` are optional but recommended: with
-them any video codec ffmpeg can decode works (including AV1).
+them any video codec ffmpeg can decode works (including AV1); without them, OpenCV's decoder is used.
 
 ## Install
 
@@ -20,7 +20,6 @@ them any video codec ffmpeg can decode works (including AV1).
                                                  #    clip_frames/filled/shot_001/000001.jpg, ...
                                                  #    clip_frames/original/shot_002/000029.jpg, ...
     ./fgfill.py clip.mp4 -o frames --ext .png    # -> frames/{original,filled}/shot_NNN/000001.png, ...
-    ./fgfill.py clip.mp4 --video                 # -> clip_filled.mp4 (H.264, audio kept)
     ./fgfill.py photos/                          # -> photos_filled/ (recursive, keeps structure)
     ./fgfill.py a.jpg b.png -o out/              # several files into a directory
     ./fgfill.py clip.mp4 --fill mono --static    # one frozen frame of greyscale static

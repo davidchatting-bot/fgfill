@@ -3,10 +3,10 @@
 
 Uses MediaPipe's selfie segmentation models (selfie_segmenter.tflite), run through
 OpenCV's TFLite loader, so the only dependencies are opencv-python and numpy.
-ffmpeg is optional: if present, video is written as H.264 and the source audio is kept.
+Videos are written as frames, split into shots; ffmpeg is optional but decodes more codecs.
 
 Examples:
-  fgfill.py clip.mp4                      # -> clip_filled.mp4
+  fgfill.py clip.mp4                      # -> clip_frames/{original,filled}/shot_NNN/
   fgfill.py photos/                       # -> photos_filled/
   fgfill.py a.jpg b.jpg -o out/ --fill color:#00ff00
   fgfill.py clip.mp4 --fill blur:41 --invert   # blur the background instead
@@ -226,10 +226,10 @@ def process_image(proc, src, dst):
 
 
 def probe(src):
-    """(width, height, fps, frame count) of the first video stream, as ffmpeg will decode it (rotation applied)."""
+    """(width, height, frame count) of the first video stream, as ffmpeg will decode it (rotation applied)."""
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-of", "json",
-         "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames:stream_side_data=rotation",
+         "-show_entries", "stream=width,height,nb_frames:stream_side_data=rotation",
          str(src)], capture_output=True, text=True)
     streams = json.loads(out.stdout or "{}").get("streams")
     if out.returncode or not streams:
@@ -239,13 +239,7 @@ def probe(src):
     rotation = next((d.get("rotation") for d in s.get("side_data_list", []) if "rotation" in d), 0)
     if abs(int(rotation)) % 180 == 90:
         w, h = h, w
-    fps = 0.0
-    for key in ("avg_frame_rate", "r_frame_rate"):
-        num, _, den = s.get(key, "0/0").partition("/")
-        if float(den or 0):
-            fps = float(num) / float(den)
-            break
-    return w, h, fps or 25.0, int(s.get("nb_frames") or 0)
+    return w, h, int(s.get("nb_frames") or 0)
 
 
 def ffmpeg_frames(src, w, h):
@@ -276,46 +270,25 @@ def opencv_frames(cap):
 
 
 def process_video(proc, src, dst):
-    ffmpeg = shutil.which("ffmpeg") and shutil.which("ffprobe")
-    if ffmpeg:
+    """Write each frame to dst/{original,filled}/shot_NNN/000001.jpg, numbered by frame in the video."""
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
         info = probe(src)
         if info is None:
             log(f"skip {src}: no video stream")
             return False
-        w, h, fps, total = info
+        w, h, total = info
         frames = ffmpeg_frames(src, w, h)
     else:
-        log("ffmpeg not found: decoding with OpenCV" + (" (mp4v output, no audio)" if proc.args.video else ""))
+        log("ffmpeg not found: decoding with OpenCV")
         cap = cv2.VideoCapture(str(src))
         if not cap.isOpened():
             log(f"skip {src}: can't open video")
             return False
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
         frames = opencv_frames(cap)
-    proc.reset()
-    as_video = proc.args.video
-    if as_video:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        # one directory per shot: dst/{original,filled}/shot_001/000001.jpg, numbered by frame in the video
-        frame_ext = proc.args.ext or ".jpg"
+    frame_ext = proc.args.ext or ".jpg"
     shots = ShotDetector(proc.args.shot_threshold)
     shot = 0
-
-    if as_video and ffmpeg:
-        cmd = ["ffmpeg", "-y", "-loglevel", "error",
-               "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}", "-i", "-",
-               "-i", str(src), "-map", "0:v", "-map", "1:a?", "-c:a", "aac", "-shortest",
-               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(proc.args.crf),
-               # even dimensions are required by yuv420p
-               "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-               str(dst)]
-        pipe = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    elif as_video:
-        writer = cv2.VideoWriter(str(dst), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
     n = 0
     try:
@@ -323,34 +296,22 @@ def process_video(proc, src, dst):
             if shots.is_cut(frame) or n == 0:
                 shot += 1
                 proc.reset()  # don't smooth masks across a cut
-                if not as_video:
-                    shot_dir = f"shot_{shot:03d}"
-                    for sub in ("original", "filled"):
-                        (dst / sub / shot_dir).mkdir(parents=True, exist_ok=True)
+                shot_dir = f"shot_{shot:03d}"
+                for sub in ("original", "filled"):
+                    (dst / sub / shot_dir).mkdir(parents=True, exist_ok=True)
             out = proc(frame)
-            if not as_video:
-                name = f"{n + 1:06d}{frame_ext}"
-                if not (cv2.imwrite(str(dst / "original" / shot_dir / name), frame)
-                        and cv2.imwrite(str(dst / "filled" / shot_dir / name), out)):
-                    log(f"failed to write frame {n + 1} to {dst}")
-                    return False
-            elif ffmpeg:
-                pipe.stdin.write(np.ascontiguousarray(out).tobytes())
-            else:
-                writer.write(out)
+            name = f"{n + 1:06d}{frame_ext}"
+            if not (cv2.imwrite(str(dst / "original" / shot_dir / name), frame)
+                    and cv2.imwrite(str(dst / "filled" / shot_dir / name), out)):
+                log(f"failed to write frame {n + 1} to {dst}")
+                return False
             n += 1
             if n % 25 == 0 or n == total:
                 log(f"{src.name}: {n}/{total or '?'} frames")
     finally:
         frames.close()
-        rc = 0
-        if as_video and ffmpeg:
-            pipe.stdin.close()
-            rc = pipe.wait()
-        elif as_video:
-            writer.release()
-    if rc or n == 0:
-        log(f"failed {src}: " + (f"ffmpeg exited with {rc}" if rc else "no frames decoded"))
+    if n == 0:
+        log(f"failed {src}: no frames decoded")
         return False
     log(f"{src} -> {dst} ({n} frames, {shot} shot{'s' if shot != 1 else ''})")
     return True
@@ -413,12 +374,9 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, help="random seed for noise fills")
     ap.add_argument("--mask-only", action="store_true", help="output the mask itself (white = filled)")
     ap.add_argument("--ext", help="output image extension, e.g. .png (video frames default to .jpg)")
-    ap.add_argument("--video", action="store_true",
-                    help="write video inputs back out as a video instead of {original,filled}/shot_NNN/ frame directories")
     ap.add_argument("--shot-threshold", type=float, default=0.3, metavar="D",
                     help="histogram distance 0..1 between consecutive frames that counts as a cut (default 0.3); "
                          "lower splits more, 0 keeps the whole video as one shot")
-    ap.add_argument("--crf", type=int, default=18, help="H.264 quality for --video output (lower = better, default 18)")
     args = ap.parse_args(argv)
 
     if not 0 <= args.smooth < 1:
@@ -438,10 +396,7 @@ def main(argv=None):
     failed = 0
     for src, base in items:
         is_video = src.suffix.lower() in VIDEO_EXTS
-        if is_video:
-            ext = None if args.video else ""  # frames go in a directory named after the video
-        else:
-            ext = args.ext
+        ext = "" if is_video else args.ext  # a video's frames go in a directory named after it
         dst = output_path(src, base, args.output, multiple, ext)
         if dst.resolve() == src.resolve():
             log(f"skip {src}: output would overwrite input")
