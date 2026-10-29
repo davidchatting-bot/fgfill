@@ -77,14 +77,15 @@ def pick_model(name, frame_shape):
 
 
 class Ensemble:
-    """Per-pixel max over both models, each run on the frame and its mirror image.
+    """Per-pixel max over the given models, each run on the frame and its mirror image.
 
-    The models miss different bits of a person (limbs, people at the edges, unusual poses),
-    so taking the max catches more of them, at four times the cost of a single pass.
+    The mirror pass catches limbs and poses a single pass misses. Adding the other model
+    (`all`) catches more again, but on wide frames the square model also picks up
+    high-contrast background such as logos.
     """
 
-    def __init__(self):
-        self.segmenters = [Segmenter(name) for name in MODELS]
+    def __init__(self, names):
+        self.segmenters = [Segmenter(name) for name in names]
 
     def __call__(self, bgr):
         flipped = bgr[:, ::-1]
@@ -159,7 +160,7 @@ class Processor:
     def segmenter(self, frame):
         name = pick_model(self.args.model, frame.shape)
         if name not in self.segmenters:
-            self.segmenters[name] = Ensemble() if name == "all" else Segmenter(name)
+            self.segmenters[name] = Ensemble(MODELS if name == "all" else [name])
         return self.segmenters[name]
 
     def mask(self, frame):
@@ -359,17 +360,18 @@ def main(argv=None):
     ap.add_argument("-o", "--output", help="output file or frames directory (single input), or directory; default: <name>_filled next to the input")
     ap.add_argument("-f", "--fill", default="noise", help="what to put in place of the foreground (default: noise)")
     ap.add_argument("--invert", action="store_true", help="fill the background instead of the person")
-    ap.add_argument("-t", "--threshold", type=float, default=0.25,
-                    help="mask cutoff 0..1, lower catches more (default 0.25); use --soft for the raw confidence mask")
+    ap.add_argument("-t", "--threshold", type=float, default=0.5,
+                    help="mask cutoff 0..1, lower catches more (default 0.5); use --soft for the raw confidence mask")
     ap.add_argument("--soft", dest="threshold", action="store_const", const=None,
                     help="blend by model confidence instead of a hard cutoff")
     ap.add_argument("--dilate", type=int, default=0, metavar="PX", help="grow the mask by PX pixels")
     ap.add_argument("--feather", type=int, default=2, metavar="PX", help="soften mask edges by PX pixels (default 2)")
     ap.add_argument("--smooth", type=float, default=0.0, metavar="A",
                     help="video only: blend each mask with the previous one (0..0.95) to reduce flicker")
-    ap.add_argument("-m", "--model", choices=["all", "auto", "square", "landscape"], default="all",
-                    help="all (default): combine both models and their mirror images, catches the most; "
-                         "auto: one model, landscape for wide frames (4x faster); or force square/landscape")
+    ap.add_argument("-m", "--model", choices=["auto", "all", "square", "landscape"], default="auto",
+                    help="auto (default): the model matching the frame shape (landscape for wide frames), "
+                         "run on the frame and its mirror image; all: both models, catches more but also "
+                         "more background; or force square/landscape")
     ap.add_argument("--static", action="store_true", help="noise fills: use the same noise every frame")
     ap.add_argument("--seed", type=int, help="random seed for noise fills")
     ap.add_argument("--mask-only", action="store_true", help="output the mask itself (white = filled)")

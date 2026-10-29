@@ -30,9 +30,11 @@ them any video codec ffmpeg can decode works (including AV1); without them, Open
 Fills: `noise` (default, colour static, new each frame), `mono`, `color:#rrggbb`,
 `blur[:kernel]`, `pixelate[:block]`, `image:path`.
 
-Segmentation: by default (`-m all`) both MediaPipe selfie models are run on the frame and on
-its mirror image and the masks combined, with a low cutoff (`-t 0.25`), so as much of each
-person as possible is caught. `-m auto` is the fast single-model mode.
+Segmentation: by default (`-m auto`) the MediaPipe selfie model matching the frame's shape
+(landscape for frames wider than 1.3:1, otherwise square) is run on the frame and on its mirror
+image, the masks combined, and cut off at `-t 0.5`. For more inclusive masks use `-m all`
+(both models) and/or a lower threshold such as `-t 0.25`; these catch more of each person,
+e.g. through motion blur, but also more background.
 
 Shots: a cut is where the hue/saturation histogram distance between consecutive frames exceeds
 `--shot-threshold` (default 0.3, calibrated on broadcast sports footage where real cuts scored
@@ -40,7 +42,7 @@ Shots: a cut is where the hue/saturation histogram distance between consecutive 
 of the video, not the shot. Mask smoothing is reset at each cut. `--shot-threshold 0` disables
 splitting.
 
-Mask tuning: `-t/--threshold` (default 0.25, lower catches more) or `--soft` to blend by confidence,
+Mask tuning: `-t/--threshold` (default 0.5, lower catches more) or `--soft` to blend by confidence,
 `--dilate PX` to grow the mask, `--feather PX` (default 2) to soften edges,
 `--smooth 0.5` to reduce flicker in video, `-m square|landscape` to force one model.
 
